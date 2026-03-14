@@ -10,17 +10,53 @@ class LoginAndSignUp extends StatefulWidget {
 }
 
 class _LoginAndSignUpState extends State<LoginAndSignUp> {
-  bool islogin = false;
+  bool isLogin = true;
+
   void togglePage() {
-    islogin = !islogin;
+    setState(() {
+      isLogin = !isLogin;
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    if (islogin) {
-      return LoginPage(onPressed: togglePage);
-    } else {
-      return SignUp(onPressed: togglePage);
-    }
+    return Scaffold(
+      // Prothome ekti gorgeous background gradient add korchi
+      body: Container(
+        width: double.infinity,
+        height: double.infinity,
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              Color(0xFF1E3C72), // Deep Navy
+              Color(0xFF2A5298), // Royal Blue
+              Color(0xFFF8F9FD), // Soft White/Blue
+            ],
+            stops: [0.0, 0.4, 1.0],
+          ),
+        ),
+        child: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 500),
+          // Switcher-er transitions style (Fade + Scale)
+          transitionBuilder: (Widget child, Animation<double> animation) {
+            return FadeTransition(
+              opacity: animation,
+              child: ScaleTransition(
+                scale: animation.drive(
+                  Tween(begin: 0.95, end: 1.0).chain(CurveTween(curve: Curves.easeOut)),
+                ),
+                child: child,
+              ),
+            );
+          },
+          // Unique key use kora hoyeche transition trigger korar jonno
+          child: isLogin
+              ? LoginPage(key: const ValueKey('LoginPage'), onPressed: togglePage)
+              : SignUp(key: const ValueKey('SignUpPage'), onPressed: togglePage),
+        ),
+      ),
+    );
   }
 }

@@ -1,237 +1,319 @@
+import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_storage/firebase_storage.dart';
-import 'package:file_picker/file_picker.dart';
-import 'package:flutter/material.dart';
 import 'package:signature/signature.dart';
 
-class BidPageFirestore extends StatefulWidget {
+class BidPage extends StatefulWidget {
   final String tenderId;
-  const BidPageFirestore({super.key, required this.tenderId});
+  const BidPage({super.key, required this.tenderId});
 
   @override
-  State<BidPageFirestore> createState() => _BidPageFirestoreState();
+  State<BidPage> createState() => _BidPageState();
 }
 
-class _BidPageFirestoreState extends State<BidPageFirestore> {
-  final _formKey = GlobalKey<FormState>();
-  final _amount = TextEditingController();
-  final _note = TextEditingController();
-  final _sigController = SignatureController(
+class _BidPageState extends State<BidPage> {
+  final _bidController = TextEditingController();
+  final _noteController = TextEditingController();
+
+  // Signature Controller
+  final SignatureController _sigController = SignatureController(
     penStrokeWidth: 3,
     penColor: Colors.black,
+    exportBackgroundColor: Colors.white,
   );
-  List<PlatformFile> _files = [];
+
   bool _isSubmitting = false;
 
-  @override
-  void dispose() {
-    _amount.dispose();
-    _note.dispose();
-    _sigController.dispose();
-    super.dispose();
-  }
+  // --- Bid Submit Logic ---
+  Future<void> _placeBid() async {
+    if (_bidController.text.isEmpty) return;
 
-  Future<void> _pickFiles() async {
-    final res = await FilePicker.platform.pickFiles(
-      allowMultiple: true,
-      withData: true,
-      type: FileType.custom,
-      allowedExtensions: ['pdf', 'doc', 'docx'],
-    );
-    if (res != null) setState(() => _files = res.files);
-  }
-
-  Future<void> _submit() async {
-    if (!_formKey.currentState!.validate()) return;
     setState(() => _isSubmitting = true);
+
     try {
       final uid = FirebaseAuth.instance.currentUser!.uid;
-      final bidRef = FirebaseFirestore.instance
+
+      await FirebaseFirestore.instance
           .collection('tenders')
           .doc(widget.tenderId)
           .collection('bids')
-          .doc(uid); // one bid per user
-      final storage = FirebaseStorage.instance;
+          .add({
+            'userId': uid,
+            'bidAmount': double.parse(_bidController.text),
+            'note': _noteController.text.trim(),
+            'createdAt': FieldValue.serverTimestamp(),
+            'status': 'pending',
+          });
 
-      // Load existing bid (to preserve createdAt/files/signature if needed)
-      final existingSnap = await bidRef.get();
-      final existingData = existingSnap.data();
-      final existingFiles = List<String>.from(existingData?['files'] ?? []);
-      String? sigUrl = existingData?['signatureUrl'];
-
-      // Upload attachments (new ones only)
-      final uploaded = <String>[];
-      for (final f in _files) {
-        if (f.bytes == null) continue;
-        final path = 'bids/${widget.tenderId}/$uid/${f.name}';
-        final task = await storage
-            .ref(path)
-            .putData(
-              f.bytes!,
-              SettableMetadata(
-                contentType: f.extension == 'pdf'
-                    ? 'application/pdf'
-                    : 'application/octet-stream',
-              ),
-            );
-        uploaded.add(await task.ref.getDownloadURL());
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("Bid Placed Successfully!"),
+            backgroundColor: Colors.green,
+          ),
+        );
       }
-
-      // Upload signature as PNG (only if user drew something)
-      final sigBytes = await _sigController.toPngBytes();
-      if (sigBytes != null && sigBytes.isNotEmpty) {
-        final task = await storage
-            .ref('bids/${widget.tenderId}/$uid/signature.png')
-            .putData(sigBytes, SettableMetadata(contentType: 'image/png'));
-        sigUrl = await task.ref.getDownloadURL();
-      }
-
-      final allFiles = [...existingFiles, ...uploaded];
-
-      final payload = <String, dynamic>{
-        'bidderId': uid,
-        'amount': double.tryParse(_amount.text.replaceAll(',', '').trim()),
-        'note': _note.text.trim(),
-        'files': allFiles,
-        'signatureUrl': sigUrl,
-        'status': 'submitted',
-        'updatedAt': FieldValue.serverTimestamp(),
-      };
-      if (!existingSnap.exists) {
-        payload['createdAt'] = FieldValue.serverTimestamp();
-      }
-
-      await bidRef.set(payload, SetOptions(merge: true));
-
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Bid submitted')));
-      Navigator.pop(context);
     } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Error: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Error: $e"), backgroundColor: Colors.red),
+      );
     } finally {
       if (mounted) setState(() => _isSubmitting = false);
     }
   }
 
-  Future<void> _withdraw() async {
-    final uid = FirebaseAuth.instance.currentUser!.uid;
-    await FirebaseFirestore.instance
-        .collection('tenders')
-        .doc(widget.tenderId)
-        .collection('bids')
-        .doc(uid)
-        .delete();
-    if (!mounted) return;
-    Navigator.pop(context);
-  }
-
   @override
   Widget build(BuildContext context) {
     final uid = FirebaseAuth.instance.currentUser!.uid;
-    final bidDoc = FirebaseFirestore.instance
-        .collection('tenders')
-        .doc(widget.tenderId)
-        .collection('bids')
-        .doc(uid);
 
-    return Scaffold(
-      appBar: AppBar(title: const Text("Submit Bid")),
-      body: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-        stream: bidDoc.snapshots(),
-        builder: (_, snap) {
-          final existing = snap.data?.data();
-          if (existing != null && _amount.text.isEmpty) {
-            _amount.text = (existing['amount']?.toString() ?? '');
-            _note.text = existing['note'] ?? '';
-          }
-          return Padding(
-            padding: const EdgeInsets.all(16),
-            child: Form(
-              key: _formKey,
-              child: ListView(
-                children: [
-                  TextFormField(
-                    controller: _amount,
-                    keyboardType: const TextInputType.numberWithOptions(
-                      decimal: true,
-                    ),
-                    decoration: const InputDecoration(
-                      labelText: "Bid Amount (৳)",
-                      border: OutlineInputBorder(),
-                    ),
-                    validator: (v) =>
-                        (v == null || v.isEmpty) ? "Enter amount" : null,
+    return StreamBuilder<DocumentSnapshot>(
+      // Firestore theke user data real-time-e monitor kora hocche
+      stream: FirebaseFirestore.instance
+          .collection('users')
+          .doc(uid)
+          .snapshots(),
+      builder: (context, snapshot) {
+        if (!snapshot.hasData)
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
+
+        final userData = snapshot.data!.data() as Map<String, dynamic>?;
+
+        // Validation Flags (Admin theke isVerified true hole eta automatic update hobe)
+        final bool isVerified = userData?['isVerified'] ?? false;
+        final double walletBalance = (userData?['walletBalance'] ?? 0.0)
+            .toDouble();
+
+        return Scaffold(
+          backgroundColor: const Color(0xFFF5F7FA),
+          appBar: AppBar(
+            title: const Text(
+              'Live Auction Bid',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            backgroundColor: const Color(0xFF3F51B5),
+            elevation: 0,
+          ),
+          body: Column(
+            children: [
+              // --- Error Bar: Jodi verified na hoy ---
+              if (!isVerified)
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(
+                    vertical: 12,
+                    horizontal: 20,
                   ),
-                  const SizedBox(height: 12),
-                  TextFormField(
-                    controller: _note,
-                    maxLines: 3,
-                    decoration: const InputDecoration(
-                      labelText: "Additional Note",
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  ElevatedButton.icon(
-                    onPressed: _pickFiles,
-                    icon: const Icon(Icons.attach_file),
-                    label: Text("Attachments (${_files.length})"),
-                  ),
-                  const SizedBox(height: 12),
-                  const Text("Digital Signature"),
-                  const SizedBox(height: 6),
-                  Container(
-                    height: 160,
-                    decoration: BoxDecoration(
-                      color: Colors.grey.shade100,
-                      border: Border.all(color: Colors.grey.shade400),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Signature(
-                      controller: _sigController,
-                      backgroundColor: Colors.transparent,
-                    ),
-                  ),
-                  Row(
+                  color: Colors.redAccent,
+                  child: const Row(
                     children: [
-                      TextButton(
-                        onPressed: _sigController.clear,
-                        child: const Text('Clear'),
+                      Icon(
+                        Icons.gpp_maybe_rounded,
+                        color: Colors.white,
+                        size: 20,
                       ),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-                  Row(
-                    children: [
+                      SizedBox(width: 10),
                       Expanded(
-                        child: ElevatedButton.icon(
-                          onPressed: _isSubmitting ? null : _submit,
-                          icon: const Icon(Icons.send),
-                          label: const Text("Submit"),
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      if (existing != null)
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            onPressed: _withdraw,
-                            icon: const Icon(Icons.delete),
-                            label: const Text("Withdraw"),
+                        child: Text(
+                          "Your NID and Phone must be verified by Admin before bidding.",
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w500,
                           ),
                         ),
+                      ),
                     ],
                   ),
-                ],
+                ),
+
+              Expanded(
+                child: ListView(
+                  padding: const EdgeInsets.all(20),
+                  children: [
+                    // Highest Bid Card
+                    _buildHighestBidCard(),
+
+                    const SizedBox(height: 25),
+
+                    // Bid Input
+                    _buildInputField(
+                      controller: _bidController,
+                      label: "Your Bid Amount (৳)",
+                      icon: Icons.gavel_rounded,
+                      keyboardType: TextInputType.number,
+                    ),
+
+                    const SizedBox(height: 10),
+                    Text(
+                      "10% Security Deposit to be held: ৳${(_bidController.text.isEmpty ? 0 : double.tryParse(_bidController.text) ?? 0) * 0.1}",
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Colors.black54,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+
+                    const SizedBox(height: 20),
+
+                    _buildInputField(
+                      controller: _noteController,
+                      label: "Note to Admin",
+                      icon: Icons.note_add_rounded,
+                      maxLines: 3,
+                    ),
+
+                    const SizedBox(height: 25),
+                    const Text(
+                      "Digital Signature:",
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 10),
+
+                    // Signature Pad
+                    Container(
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Colors.grey.shade300),
+                        borderRadius: BorderRadius.circular(12),
+                        color: Colors.white,
+                      ),
+                      child: Signature(
+                        controller: _sigController,
+                        height: 150,
+                        backgroundColor: Colors.white,
+                      ),
+                    ),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton(
+                        onPressed: () => _sigController.clear(),
+                        child: const Text(
+                          "Clear Signature",
+                          style: TextStyle(color: Colors.red),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            ),
-          );
-        },
+
+              // --- Final Place Bid Button ---
+              Padding(
+                padding: const EdgeInsets.all(20),
+                child: SizedBox(
+                  width: double.infinity,
+                  height: 55,
+                  child: ElevatedButton(
+                    // Logic: Verified hole logic pabe, nahole null (disabled state)
+                    onPressed: (isVerified && !_isSubmitting)
+                        ? _placeBid
+                        : null,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: isVerified
+                          ? const Color(0xFF3F51B5)
+                          : Colors.grey.shade400,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(15),
+                      ),
+                      elevation: isVerified ? 4 : 0,
+                    ),
+                    child: _isSubmitting
+                        ? const CircularProgressIndicator(color: Colors.white)
+                        : const Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(
+                                Icons.unarchive_rounded,
+                                color: Colors.white,
+                              ),
+                              SizedBox(width: 10),
+                              Text(
+                                "PLACE BID NOW",
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
+                          ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildHighestBidCard() {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFF3F51B5), Color(0xFF5C6BC0)],
+        ),
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.indigo.withOpacity(0.3),
+            blurRadius: 10,
+            offset: const Offset(0, 5),
+          ),
+        ],
+      ),
+      child: const Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                "Current Highest Bid",
+                style: TextStyle(color: Colors.white70, fontSize: 12),
+              ),
+              SizedBox(height: 5),
+              Text(
+                "৳0.0",
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 24,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          Icon(Icons.trending_up_rounded, color: Colors.white, size: 40),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildInputField({
+    required TextEditingController controller,
+    required String label,
+    required IconData icon,
+    TextInputType? keyboardType,
+    int maxLines = 1,
+  }) {
+    return TextField(
+      controller: controller,
+      maxLines: maxLines,
+      keyboardType: keyboardType,
+      onChanged: (v) => setState(() {}),
+      decoration: InputDecoration(
+        labelText: label,
+        prefixIcon: Icon(icon, color: const Color(0xFF3F51B5)),
+        filled: true,
+        fillColor: Colors.white,
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide.none,
+        ),
+        contentPadding: const EdgeInsets.all(18),
       ),
     );
   }

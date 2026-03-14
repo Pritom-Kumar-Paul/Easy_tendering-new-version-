@@ -1,27 +1,22 @@
 rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
-    function isSignedIn() { return request.auth != null; }
-    function isOwner(uid) { return isSignedIn() && request.auth.uid == uid; }
 
-    // Bid attachments & signature: only owner can read/write
-    match /bids/{tenderId}/{uid}/{allPaths=**} {
-      allow read, write: if isOwner(uid);
+    // Admin side: tender docs (we keep read public for convenience)
+    match /tenders/{tenderId}/docs/{fileName} {
+      allow read: if true;
+      // Dev: any signed-in can upload; in prod use custom claims to restrict to admin
+      allow write: if request.auth != null;
     }
 
-    // KYC docs: only owner
-    match /kyc/{uid}/{allPaths=**} {
-      allow read, write: if isOwner(uid);
+    // Bidder side: attachments and signature
+    match /bids/{tenderId}/{userId}/{allPaths=**} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
     }
 
-    // Tender documents (adjust as needed)
-    match /tender_docs/{allPaths=**} {
-      allow read: if true;      // public download
-      allow write: if false;    // only admin via console/functions
-    }
-
-    match /{allPaths=**} {
-      allow read, write: if false;
+    // KYC uploads
+    match /kyc/{userId}/{fileName} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
     }
   }
 }

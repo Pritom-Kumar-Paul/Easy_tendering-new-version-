@@ -8,30 +8,74 @@ service cloud.firestore {
 
     function isAdmin() {
       return isSignedIn() &&
-             get(/databases/$(db)/documents/users/$(request.auth.uid)).data.role == 'admin';
+        get(/databases/$(db)/documents/users/$(request.auth.uid)).data.role == 'admin';
     }
 
-    match /tenders/{tid} {
-      allow read: if true;
-      allow create, update, delete: if isAdmin();
+    // Users collection: profile, wallet, watchlist, logs
+    match /users/{uid} {
+      // Read: owner or admin
+      allow read: if isSignedIn() && (request.auth.uid == uid || isAdmin());
 
-      match /bids/{bidUid} {
-        allow read: if isSignedIn();
+      // Create/update/delete: allow owner (DEV) and admin
+      // This lets bidder-side 10% hold update walletBalance/heldTotal directly.
+      allow create, update, delete: if isAdmin() || (isSignedIn() && request.auth.uid == uid);
 
-        // Bidder can create/update their own bid, but cannot change status
-        allow create: if isSignedIn() && request.auth.uid == bidUid;
-        allow update: if isSignedIn()
-                      && request.auth.uid == bidUid
-                      && !(request.resource.data.keys().hasOnly(['status']) || request.resource.data.diff(resource.data).changedKeys().hasAny(['status']));
-        allow delete: if isSignedIn() && request.auth.uid == bidUid;
+      // Watchlist
+      match /watchlist/{tid} {
+        allow read, write, delete: if isSignedIn() && request.auth.uid == uid;
+      }
 
-        // Admin can update anything
-        allow update, delete: if isAdmin();
+      // Wallet transactions log (created when admin adjusts wallet)
+      match /walletTx/{txId} {
+        allow read: if isSignedIn() && (request.auth.uid == uid || isAdmin());
+        allow create: if isAdmin();
+      }
+
+      // Any other subcollections under users (optional)
+      match /{sub=**} {
+        allow read: if isSignedIn() && (request.auth.uid == uid || isAdmin());
+        allow write: if isAdmin();
       }
     }
 
-    match /users/{uid} {
-      allow read, write: if isSignedIn() && request.auth.uid == uid;
+    // Tenders collection and nested subcollections
+    match /tenders/{tid} {
+
+      // Public read (listing/details)
+      allow read: if true;
+
+      // Only admin can create/update/delete tenders
+      allow create, update, delete: if isAdmin();
+
+      // Bids (tenders/{tid}/bids/{bidUid})
+      match /bids/{bidUid} {
+        // Read: admin or owner
+        allow read: if isAdmin() || (isSignedIn() && request.auth.uid == bidUid);
+
+        // Create: owner only
+        allow create: if isSignedIn() && request.auth.uid == bidUid;
+
+        // Update: owner can update own bid but CANNOT change protected fields
+        allow update: if isSignedIn()
+                      && request.auth.uid == bidUid
+                      && !request.resource.data.diff(resource.data).changedKeys()
+                           .hasAny(['status','bidderId','createdAt','depositHold','depositStatus']);
+
+        // Owner can delete own bid (withdraw)
+        allow delete: if isSignedIn() && request.auth.uid == bidUid;
+
+        // Admin override
+        allow update, delete: if isAdmin();
+      }
+
+      // Help & Queries threads: tenders/{tid}/threads/{threadUid}/messages/{mid}
+      match /threads/{threadUid} {
+        allow read, create: if isAdmin() || (isSignedIn() && request.auth.uid == threadUid);
+
+        match /messages/{mid} {
+          allow read, create: if isAdmin() || (isSignedIn() && request.auth.uid == threadUid);
+        }
+      }
     }
   }
 }
